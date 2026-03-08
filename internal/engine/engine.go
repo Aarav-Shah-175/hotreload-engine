@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -78,8 +79,10 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			if err := proc.Start(cfg.Root, cfg.ExecCmd); err != nil {
-				logger.Error("exec failed", "error", err)
+			if err := startManagedProcess(cycleCtx, proc, cfg.Root, cfg.ExecCmd, logger); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					logger.Error("exec failed", "error", err)
+				}
 				return
 			}
 			logger.Info("reload complete")
@@ -118,4 +121,39 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			startCycle()
 		}
 	}
+}
+
+func startManagedProcess(ctx context.Context, proc *process.Manager, root, execCmd string, logger *slog.Logger) error {
+	const maxWindowsAttempts = 6
+
+	if runtime.GOOS != "windows" {
+		return proc.Start(root, execCmd)
+	}
+
+	for attempt := 1; attempt <= maxWindowsAttempts; attempt++ {
+		if err := proc.Start(root, execCmd); err != nil {
+			return err
+		}
+
+		select {
+		case err := <-proc.Wait():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if attempt == maxWindowsAttempts {
+				return fmt.Errorf("process exited immediately after start: %w", err)
+			}
+			logger.Warn("process exited quickly on startup, retrying", "attempt", attempt, "error", err)
+			time.Sleep(500 * time.Millisecond)
+		case <-time.After(750 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = proc.Stop(stopCtx)
+			stopCancel()
+			return ctx.Err()
+		}
+	}
+
+	return errors.New("exhausted process startup retries")
 }

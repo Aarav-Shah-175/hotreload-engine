@@ -60,7 +60,17 @@ func (m *Manager) Start(root, command string) error {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		m.mu.Lock()
+		if m.cmd == cmd {
+			m.cmd = nil
+			m.done = nil
+			m.cancelProc = nil
+		}
+		m.mu.Unlock()
+		done <- err
+	}()
 	go stream(stdout, m.logger.With("stream", "stdout"), slog.LevelInfo)
 	go stream(stderr, m.logger.With("stream", "stderr"), slog.LevelError)
 
@@ -81,6 +91,9 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if cmd == nil {
+		return nil
+	}
+	if cmd.Process == nil {
 		return nil
 	}
 
