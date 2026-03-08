@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -38,9 +37,7 @@ func (m *Manager) Start(root, command string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := shellCommand(ctx, command)
 	cmd.Dir = root
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
+	configureProcessForPlatform(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -93,10 +90,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case err := <-done:
-		if err != nil {
-			return nil
-		}
+	case <-done:
 		return nil
 	case <-time.After(2 * time.Second):
 	}
@@ -126,22 +120,6 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 		return exec.CommandContext(ctx, "cmd", "/C", command)
 	}
 	return exec.CommandContext(ctx, "sh", "-c", command)
-}
-
-func terminateTree(pid int, force bool) error {
-	if runtime.GOOS == "windows" {
-		args := []string{"/PID", fmt.Sprintf("%d", pid), "/T"}
-		if force {
-			args = append(args, "/F")
-		}
-		return exec.Command("taskkill", args...).Run()
-	}
-
-	sig := syscall.SIGTERM
-	if force {
-		sig = syscall.SIGKILL
-	}
-	return syscall.Kill(-pid, sig)
 }
 
 func stream(reader io.Reader, logger *slog.Logger, level slog.Level) {
