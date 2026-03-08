@@ -80,12 +80,11 @@ func (m *Manager) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	pid := cmd.Process.Pid
+	_ = terminateTree(pid, false)
 	if cancel != nil {
 		cancel()
 	}
-
-	pid := cmd.Process.Pid
-	_ = terminateTree(pid, false)
 
 	select {
 	case <-ctx.Done():
@@ -96,6 +95,10 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 
 	_ = terminateTree(pid, true)
+	if cancel != nil {
+		cancel()
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
