@@ -138,3 +138,48 @@ go run ./cmd/hotreload \
 ## Demo Project
 
 A sample HTTP server is included under `testserver/` for quick validation of hot reload behavior.
+
+## Demo Instructions (Windows and Linux)
+
+### Linux/macOS
+
+Build `hotreload`:
+
+```bash
+go build -o ./bin/hotreload ./cmd/hotreload
+```
+
+Run demo server with hot reload:
+
+```bash
+./bin/hotreload \
+  --root ./testserver \
+  --build "go build -o ./bin/server ./cmd/server" \
+  --exec "./bin/server"
+```
+
+Trigger a reload:
+
+```bash
+touch ./testserver/cmd/server/main.go
+```
+
+### Windows (PowerShell)
+
+Build `hotreload`:
+
+```powershell
+go build -o .\bin\hotreload.exe .\cmd\hotreload
+```
+
+Run demo server with hot reload:
+
+```powershell
+.\bin\hotreload.exe --root .\testserver --build "go build -o .\\bin\\server.exe ./cmd/server" --exec ".\\bin\\server.exe"
+```
+
+Trigger a reload:
+
+```powershell
+(Get-Item .\testserver\cmd\server\main.go).LastWriteTime = Get-Date
+```
