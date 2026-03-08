@@ -29,14 +29,11 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	events, watchErrs := fileWatcher.Start(ctx)
 	builder := build.NewRunner(logger)
 	proc := process.NewManager(logger)
+	debouncer := NewDebouncer(ctx, cfg.Debounce)
 
-	trigger := make(chan struct{}, 1)
 	queueTrigger := func(reason string) {
-		select {
-		case trigger <- struct{}{}:
-			logger.Info("change queued", "reason", reason)
-		default:
-		}
+		logger.Info("change queued", "reason", reason)
+		debouncer.Notify()
 	}
 
 	queueTrigger("startup")
@@ -84,8 +81,6 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		}()
 	}
 
-	var debounceTimer *time.Timer
-	var debounceC <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -114,21 +109,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			}
 			logger.Warn("watcher error", "error", err)
 
-		case <-trigger:
-			if debounceTimer == nil {
-				debounceTimer = time.NewTimer(cfg.Debounce)
-				debounceC = debounceTimer.C
-				continue
-			}
-			if !debounceTimer.Stop() {
-				select {
-				case <-debounceTimer.C:
-				default:
-				}
-			}
-			debounceTimer.Reset(cfg.Debounce)
-
-		case <-debounceC:
+		case <-debouncer.C():
 			startCycle()
 		}
 	}
