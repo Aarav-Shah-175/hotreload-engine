@@ -18,6 +18,12 @@ import (
 	"hotreload/internal/watcher"
 )
 
+const (
+	crashExitThreshold = 1 * time.Second
+	crashWindowSpan    = 10 * time.Second
+	crashLimit         = 5
+)
+
 var errRestartSuppressed = errors.New("restart suppressed")
 
 type crashWindow struct {
@@ -69,7 +75,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	proc := process.NewManager(logger)
 	batcher := NewEventBatcher(ctx, cfg.Debounce)
 	batchCh := batcher.C()
-	crashes := newCrashWindow(5, 10*time.Second, 1*time.Second)
+	crashes := newCrashWindow(crashLimit, crashWindowSpan, crashExitThreshold)
 
 	var activeMu sync.Mutex
 	var activeCancel context.CancelFunc
