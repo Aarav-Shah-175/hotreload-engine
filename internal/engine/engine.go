@@ -54,8 +54,9 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			logger.Info("reload started")
 
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := proc.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Warn("stop previous server", "error", err)
+			stopErr := proc.Stop(stopCtx)
+			if stopErr != nil && !errors.Is(stopErr, context.Canceled) {
+				logger.Warn("stop previous server", "error", stopErr)
 			}
 			stopCancel()
 
@@ -71,6 +72,10 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			if cycleCtx.Err() != nil {
 				logger.Info("skipping start because reload was superseded")
 				return
+			}
+
+			if stopErr == nil {
+				time.Sleep(500 * time.Millisecond)
 			}
 
 			if err := proc.Start(cfg.Root, cfg.ExecCmd); err != nil {
