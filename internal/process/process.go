@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
-	"runtime"
 	"sync"
 	"time"
 )
@@ -34,8 +33,13 @@ func (m *Manager) Start(root, command string) error {
 		return errors.New("server already running")
 	}
 
+	args, err := splitCommandLine(command)
+	if err != nil {
+		return fmt.Errorf("parse exec command: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := shellCommand(ctx, command)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = root
 	configureProcessForPlatform(cmd)
 
@@ -116,13 +120,6 @@ func (m *Manager) Wait() <-chan error {
 		return closed
 	}
 	return m.done
-}
-
-func shellCommand(ctx context.Context, command string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "cmd", "/C", command)
-	}
-	return exec.CommandContext(ctx, "sh", "-c", command)
 }
 
 func stream(reader io.Reader, logger *slog.Logger, level slog.Level) {
