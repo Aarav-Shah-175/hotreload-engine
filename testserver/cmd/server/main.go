@@ -14,7 +14,7 @@ func main() {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "hello from testserver at %s\n", time.Now().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, "hello from hotreload demo %s\n", time.Now().Format(time.RFC3339))
 	})
 
 	server := &http.Server{

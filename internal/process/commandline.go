@@ -36,11 +36,9 @@ func splitCommandLine(command string) ([]string, error) {
 	if inSingle || inDouble {
 		return nil, fmt.Errorf("invalid command line: %q", command)
 	}
-
 	flush()
 	if len(args) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
-
 	return args, nil
 }
