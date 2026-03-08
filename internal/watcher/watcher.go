@@ -64,15 +64,19 @@ func (w *Watcher) Start(ctx context.Context) (<-chan Event, <-chan error) {
 					continue
 				}
 
-				if raw.Has(fsnotify.Create) {
-					if stat, err := os.Stat(cleanPath); err == nil && stat.IsDir() {
-						if err := w.addRecursive(cleanPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-							errs <- err
-						}
-					}
+				isDir := false
+				if stat, err := os.Stat(cleanPath); err == nil {
+					isDir = stat.IsDir()
 				}
 
-				if raw.Has(fsnotify.Write) || raw.Has(fsnotify.Create) || raw.Has(fsnotify.Remove) || raw.Has(fsnotify.Rename) {
+				if raw.Has(fsnotify.Create) && isDir {
+					if err := w.addRecursive(cleanPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+						errs <- err
+					}
+					continue
+				}
+
+				if shouldForwardEvent(raw.Op, isDir) {
 					events <- Event{Path: cleanPath, Op: raw.Op}
 				}
 			}
@@ -80,6 +84,13 @@ func (w *Watcher) Start(ctx context.Context) (<-chan Event, <-chan error) {
 	}()
 
 	return events, errs
+}
+
+func shouldForwardEvent(op fsnotify.Op, isDir bool) bool {
+	if isDir {
+		return false
+	}
+	return op.Has(fsnotify.Write) || op.Has(fsnotify.Create) || op.Has(fsnotify.Remove) || op.Has(fsnotify.Rename)
 }
 
 func (w *Watcher) addRecursive(root string) error {
@@ -126,10 +137,15 @@ func ShouldIgnore(path, root string) bool {
 	}
 
 	base := filepath.Base(path)
-	if strings.HasPrefix(base, ".#") || strings.HasSuffix(base, "~") {
+	if strings.HasSuffix(base, ".log") {
 		return true
 	}
-	if strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, ".swx") || strings.HasSuffix(base, ".tmp") {
+
+	if strings.HasPrefix(base, ".#") || strings.HasPrefix(base, "#") || strings.HasSuffix(base, "#") || strings.HasSuffix(base, "~") {
+		return true
+	}
+
+	if strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, ".swo") || strings.HasSuffix(base, ".swx") || strings.HasSuffix(base, ".tmp") || strings.HasSuffix(base, ".temp") {
 		return true
 	}
 
