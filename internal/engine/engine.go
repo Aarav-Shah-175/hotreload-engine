@@ -18,6 +18,43 @@ import (
 	"hotreload/internal/watcher"
 )
 
+var errRestartSuppressed = errors.New("restart suppressed")
+
+type crashWindow struct {
+	mu      sync.Mutex
+	events  []time.Time
+	limit   int
+	window  time.Duration
+	crashIn time.Duration
+}
+
+func newCrashWindow(limit int, window, crashIn time.Duration) *crashWindow {
+	return &crashWindow{
+		limit:   limit,
+		window:  window,
+		crashIn: crashIn,
+	}
+}
+
+func (c *crashWindow) recordIfCrash(startedAt time.Time, exitedAt time.Time) bool {
+	if exitedAt.Sub(startedAt) > c.crashIn {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cutoff := exitedAt.Add(-c.window)
+	kept := c.events[:0]
+	for _, ts := range c.events {
+		if !ts.Before(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	c.events = append(kept, exitedAt)
+	return len(c.events) > c.limit
+}
+
 func Run(cfg config.Config, logger *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -31,6 +68,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	builder := build.NewRunner(logger)
 	proc := process.NewManager(logger)
 	debouncer := NewDebouncer(ctx, cfg.Debounce)
+	crashes := newCrashWindow(5, 10*time.Second, 1*time.Second)
 
 	queueTrigger := func(reason string) {
 		logger.Info("change queued", "reason", reason)
@@ -79,7 +117,11 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			if err := startManagedProcess(cycleCtx, proc, cfg.Root, cfg.ExecCmd, logger); err != nil {
+			if err := startManagedProcess(cycleCtx, proc, cfg.Root, cfg.ExecCmd, logger, crashes); err != nil {
+				if errors.Is(err, errRestartSuppressed) {
+					logger.Warn("server crashing repeatedly, restart suppressed")
+					return
+				}
 				if !errors.Is(err, context.Canceled) {
 					logger.Error("exec failed", "error", err)
 				}
@@ -123,30 +165,37 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	}
 }
 
-func startManagedProcess(ctx context.Context, proc *process.Manager, root, execCmd string, logger *slog.Logger) error {
-	const maxWindowsAttempts = 6
-
-	if runtime.GOOS != "windows" {
-		return proc.Start(root, execCmd)
+func startManagedProcess(ctx context.Context, proc *process.Manager, root, execCmd string, logger *slog.Logger, crashes *crashWindow) error {
+	maxAttempts := 1
+	if runtime.GOOS == "windows" {
+		maxAttempts = 6
 	}
 
-	for attempt := 1; attempt <= maxWindowsAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		startedAt := time.Now()
 		if err := proc.Start(root, execCmd); err != nil {
 			return err
 		}
 
 		select {
 		case err := <-proc.Wait():
+			exitedAt := time.Now()
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if attempt == maxWindowsAttempts {
-				return fmt.Errorf("process exited immediately after start: %w", err)
+			if crashes.recordIfCrash(startedAt, exitedAt) {
+				return errRestartSuppressed
 			}
-			logger.Warn("process exited quickly on startup, retrying", "attempt", attempt, "error", err)
-			time.Sleep(500 * time.Millisecond)
-		case <-time.After(750 * time.Millisecond):
+			if attempt < maxAttempts {
+				logger.Warn("process exited quickly on startup, retrying", "attempt", attempt, "error", err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("process exited during startup: %w", err)
+
+		case <-time.After(1 * time.Second):
 			return nil
+
 		case <-ctx.Done():
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = proc.Stop(stopCtx)
