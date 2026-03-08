@@ -1,8 +1,125 @@
 # hotreload
 
-`hotreload` is a Go CLI that watches project files recursively, rebuilds on change, and restarts the server while streaming logs in real time.
+`hotreload` is a Go CLI that watches a project recursively, rebuilds it on source changes, and restarts the server process with real-time logs.
 
-## CLI
+## Overview of hotreload
+
+The tool is designed for local backend development loops:
+
+1. Start `hotreload` once.
+2. Edit source files.
+3. On change, `hotreload` rebuilds and restarts your server automatically.
+
+Core behavior implemented in this repository:
+
+- recursive directory watching
+- startup build trigger (no initial file save required)
+- debounced change handling
+- cancellation of stale rebuild cycles
+- process-tree termination across platforms
+- structured lifecycle logging with `log/slog`
+- crash-loop protection for unstable servers
+
+## Architecture Diagram (ASCII)
+
+```text
++---------------------+
+|   cmd/hotreload     |
+| flags + slog setup  |
++----------+----------+
+           |
+           v
++---------------------+        fsnotify events         +----------------------+
+|  internal/watcher   | -----------------------------> |    internal/engine   |
+| recursive watch +   |                                | debounce + orchestration
+| path filtering      | <----------------------------- | cycle cancellation   |
++---------------------+    watch new dirs dynamically  +----------+-----------+
+                                                                  |
+                                       +--------------------------+--------------------------+
+                                       |                                                     |
+                                       v                                                     v
+                           +---------------------+                               +----------------------+
+                           |   internal/build    |                               |  internal/process    |
+                           | run build command   |                               | start/stop server    |
+                           | stream build logs   |                               | kill process trees   |
+                           +---------------------+                               | stream server logs   |
+                                                                                 +----------------------+
+```
+
+## Component Explanations
+
+### watcher (`internal/watcher`)
+
+Responsibilities:
+
+- initialize recursive watches under `--root`
+- add newly created subdirectories while running
+- ignore non-relevant paths/files
+- emit normalized file-change events to the engine
+
+Default ignore rules include:
+
+- directories: `.git`, `node_modules`, `bin`, `build`, `dist`, `tmp`
+- files: `*.log`
+- temporary editor files: `*.swp`, `*.swo`, `*.swx`, `*.tmp`, `*.temp`, `*~`, `.#*`, `#*#`
+
+This keeps rebuild triggers focused on meaningful source changes.
+
+### engine (`internal/engine`)
+
+Responsibilities:
+
+- central orchestration loop
+- trigger first build immediately on startup
+- debounce noisy file events
+- cancel in-flight reload cycle when a newer change arrives
+- stop previous server, run build, start new server
+- apply crash-loop protection (suppress repeated unstable restarts)
+
+Crash-loop protection:
+
+- a server exit within `1s` of start is treated as a crash
+- if crashes exceed `5` within a rolling `10s` window, restart is suppressed and a warning is logged
+
+### build runner (`internal/build`)
+
+Responsibilities:
+
+- execute `--build` command in root directory
+- stream stdout/stderr in real time via structured logging
+- support context cancellation so stale builds can be aborted
+
+### process manager (`internal/process`)
+
+Responsibilities:
+
+- execute `--exec` command as the actual server process
+- stream stdout/stderr in real time
+- terminate previous process tree before restart
+- expose lifecycle state to the engine
+
+It is implemented with platform-specific behavior using Go build tags.
+
+## How Debouncing Works
+
+Editors often produce multiple file events per save. The engine uses a debouncer window (`--debounce`, default `300ms`) to coalesce event bursts:
+
+- first event starts/reset timer
+- additional events within window reset timer
+- when window elapses, only one reload cycle starts
+
+This avoids unnecessary duplicate rebuilds while staying responsive.
+
+## How Process Termination Works
+
+`internal/process` uses OS-specific implementations:
+
+- Windows (`terminate_windows.go`): `taskkill /PID <pid> /T` and `/F` fallback
+- Unix (`terminate_unix.go`): process-group signaling with `SIGTERM` then `SIGKILL`
+
+The manager first attempts graceful tree termination, waits briefly, and escalates if needed. This ensures parent and child processes are cleaned up before the next start.
+
+## Example CLI Usage
 
 ```bash
 go run ./cmd/hotreload \
@@ -11,76 +128,13 @@ go run ./cmd/hotreload \
   --exec "./bin/server"
 ```
 
-Flags:
+### Flags
 
-- `--root`: directory to watch recursively.
-- `--build`: build command to execute.
-- `--exec`: command to run after a successful build.
-- `--debounce`: debounce window for bursty file events (default `300ms`).
+- `--root`: directory to watch recursively
+- `--build`: command used to build the project
+- `--exec`: command used to run the built server
+- `--debounce`: debounce duration for file-event bursts (default `300ms`)
 
-## Architecture
+## Demo Project
 
-### 1. `cmd/hotreload`
-
-Thin entrypoint: parse config, initialize `slog`, and run engine.
-
-### 2. `internal/engine`
-
-The orchestrator:
-
-- starts recursive watcher
-- enqueues first build on startup
-- debounces change events
-- cancels an in-flight build/reload when newer changes arrive
-- stops previous server before launching the new one
-
-### 3. `internal/watcher`
-
-`fsnotify`-based recursive watcher:
-
-- adds watches for existing subdirectories
-- adds new directories dynamically when created
-- filters ignored paths and temp files
-- emits normalized change events
-
-Ignored by default:
-
-- `.git`
-- `node_modules`
-- `bin`, `build`, `dist`, `tmp`
-- common temporary editor files (`*.swp`, `*.swx`, `*.tmp`, `*~`, `.#*`)
-
-### 4. `internal/build`
-
-Build command runner using `exec.CommandContext`:
-
-- shell command execution (`cmd /C` on Windows, `sh -c` on Unix)
-- cancellation via context when superseded by new changes
-- line-by-line log streaming through `log/slog`
-
-### 5. `internal/process`
-
-Server process lifecycle:
-
-- start command and stream stdout/stderr live
-- terminate previous process tree on restart
-- on Unix, command runs in its own process group and is terminated via group signal
-- on Windows, uses `taskkill /T` (and `/F` fallback) to kill parent + children
-
-## Demo
-
-A sample project is included at `testserver/`.
-
-Run demo with Make:
-
-```bash
-make run-demo
-```
-
-This starts `hotreload` watching `testserver`, rebuilding `testserver/bin/server`, and running it on port `8080`.
-
-## Make targets
-
-- `make run-demo` - run hotreload against demo server
-- `make build-hotreload` - build the hotreload binary into `./bin/hotreload`
-- `make clean` - remove build artifacts
+A sample HTTP server is included under `testserver/` for quick validation of hot reload behavior.
