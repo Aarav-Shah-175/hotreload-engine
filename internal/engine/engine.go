@@ -90,15 +90,19 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		activeMu.Unlock()
 
 		go func() {
-			logger.Info("reload started")
+			logger.Info("reload started", "root", cfg.Root)
 
+			logger.Info("stopping previous server", "root", cfg.Root)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			stopErr := proc.Stop(stopCtx)
 			if stopErr != nil && !errors.Is(stopErr, context.Canceled) {
-				logger.Warn("stop previous server", "error", stopErr)
+				logger.Warn("stopping previous server failed", "error", stopErr)
+			} else {
+				logger.Info("previous server stopped")
 			}
 			stopCancel()
 
+			logger.Info("build start", "root", cfg.Root, "build_cmd", cfg.BuildCmd)
 			if err := builder.Run(cycleCtx, cfg.Root, cfg.BuildCmd); err != nil {
 				if cycleCtx.Err() != nil {
 					logger.Info("build canceled due to newer changes")
@@ -107,6 +111,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				logger.Error("build failed", "error", err)
 				return
 			}
+			logger.Info("build success", "root", cfg.Root)
 
 			if cycleCtx.Err() != nil {
 				logger.Info("skipping start because reload was superseded")
@@ -117,6 +122,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				time.Sleep(500 * time.Millisecond)
 			}
 
+			logger.Info("server start", "root", cfg.Root, "exec_cmd", cfg.ExecCmd)
 			if err := startManagedProcess(cycleCtx, proc, cfg.Root, cfg.ExecCmd, logger, crashes); err != nil {
 				if errors.Is(err, errRestartSuppressed) {
 					logger.Warn("server crashing repeatedly, restart suppressed")
@@ -127,7 +133,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				}
 				return
 			}
-			logger.Info("reload complete")
+			logger.Info("reload complete", "root", cfg.Root)
 		}()
 	}
 

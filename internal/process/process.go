@@ -59,6 +59,8 @@ func (m *Manager) Start(root, command string) error {
 		return fmt.Errorf("start server: %w", err)
 	}
 
+	m.logger.Info("server process started", "pid", cmd.Process.Pid, "command", command)
+
 	done := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
@@ -69,6 +71,12 @@ func (m *Manager) Start(root, command string) error {
 			m.cancelProc = nil
 		}
 		m.mu.Unlock()
+
+		if err != nil {
+			m.logger.Warn("server process exited", "pid", cmd.Process.Pid, "error", err)
+		} else {
+			m.logger.Info("server process exited", "pid", cmd.Process.Pid)
+		}
 		done <- err
 	}()
 	go stream(stdout, m.logger.With("stream", "stdout"), slog.LevelInfo)
