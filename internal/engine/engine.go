@@ -67,19 +67,12 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	events, watchErrs := fileWatcher.Start(ctx)
 	builder := build.NewRunner(logger)
 	proc := process.NewManager(logger)
-	debouncer := NewDebouncer(ctx, cfg.Debounce)
+	batcher := NewEventBatcher(ctx, cfg.Debounce)
 	crashes := newCrashWindow(5, 10*time.Second, 1*time.Second)
-
-	queueTrigger := func(reason string) {
-		logger.Info("change queued", "reason", reason)
-		debouncer.Notify()
-	}
-
-	queueTrigger("startup")
 
 	var activeMu sync.Mutex
 	var activeCancel context.CancelFunc
-	startCycle := func() {
+	startCycle := func(reason string, batchCount int) {
 		activeMu.Lock()
 		if activeCancel != nil {
 			activeCancel()
@@ -90,7 +83,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		activeMu.Unlock()
 
 		go func() {
-			logger.Info("reload started", "root", cfg.Root)
+			logger.Info("reload started", "root", cfg.Root, "reason", reason, "batch_events", batchCount)
 
 			logger.Info("stopping previous server", "root", cfg.Root)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -137,6 +130,8 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		}()
 	}
 
+	startCycle("startup", 0)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -156,7 +151,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 				return nil
 			}
 			logger.Info("file event", "path", ev.Path, "op", ev.Op.String())
-			queueTrigger("file event")
+			batcher.Add(ev.Path)
 
 		case err, ok := <-watchErrs:
 			if !ok {
@@ -165,8 +160,15 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			}
 			logger.Warn("watcher error", "error", err)
 
-		case <-debouncer.C():
-			startCycle()
+		case batch, ok := <-batcher.C():
+			if !ok {
+				continue
+			}
+			if batch.Count == 0 {
+				continue
+			}
+			logger.Info(fmt.Sprintf("batched %d file events, triggering reload", batch.Count), "events", batch.Count)
+			startCycle("file-events", batch.Count)
 		}
 	}
 }

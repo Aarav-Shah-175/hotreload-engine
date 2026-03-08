@@ -5,20 +5,42 @@ import (
 	"time"
 )
 
-type Debouncer struct {
-	notify chan struct{}
-	out    chan struct{}
+const maxBatchBuffer = 64
+
+type Batch struct {
+	Count int
+	Paths []string
 }
 
-func NewDebouncer(ctx context.Context, wait time.Duration) *Debouncer {
-	d := &Debouncer{
-		notify: make(chan struct{}, 1),
-		out:    make(chan struct{}, 1),
+type EventBatcher struct {
+	notify chan string
+	out    chan Batch
+}
+
+func NewEventBatcher(ctx context.Context, wait time.Duration) *EventBatcher {
+	b := &EventBatcher{
+		notify: make(chan string, 128),
+		out:    make(chan Batch, 1),
 	}
 
 	go func() {
 		var timer *time.Timer
 		var timerC <-chan time.Time
+		buffer := make([]string, 0, maxBatchBuffer)
+		total := 0
+
+		flush := func() {
+			if total == 0 {
+				return
+			}
+			batch := Batch{Count: total, Paths: append([]string(nil), buffer...)}
+			select {
+			case b.out <- batch:
+			default:
+			}
+			buffer = buffer[:0]
+			total = 0
+		}
 
 		for {
 			select {
@@ -26,9 +48,15 @@ func NewDebouncer(ctx context.Context, wait time.Duration) *Debouncer {
 				if timer != nil {
 					timer.Stop()
 				}
-				close(d.out)
+				flush()
+				close(b.out)
 				return
-			case <-d.notify:
+
+			case path := <-b.notify:
+				total++
+				if len(buffer) < maxBatchBuffer {
+					buffer = append(buffer, path)
+				}
 				if timer == nil {
 					timer = time.NewTimer(wait)
 					timerC = timer.C
@@ -41,25 +69,23 @@ func NewDebouncer(ctx context.Context, wait time.Duration) *Debouncer {
 					}
 				}
 				timer.Reset(wait)
+
 			case <-timerC:
-				select {
-				case d.out <- struct{}{}:
-				default:
-				}
+				flush()
 			}
 		}
 	}()
 
-	return d
+	return b
 }
 
-func (d *Debouncer) Notify() {
+func (b *EventBatcher) Add(path string) {
 	select {
-	case d.notify <- struct{}{}:
+	case b.notify <- path:
 	default:
 	}
 }
 
-func (d *Debouncer) C() <-chan struct{} {
-	return d.out
+func (b *EventBatcher) C() <-chan Batch {
+	return b.out
 }
