@@ -7,11 +7,13 @@ import (
 
 const maxBatchBuffer = 64
 
+// Batch represents a coalesced set of filesystem events emitted after a debounce window.
 type Batch struct {
 	Count int
 	Paths []string
 }
 
+// EventBatcher groups rapid events into one batch so each burst triggers a single reload.
 type EventBatcher struct {
 	notify chan string
 	out    chan Batch

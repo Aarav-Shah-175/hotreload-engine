@@ -1,3 +1,4 @@
 /bin/
 /testserver/bin/
 *.log
+hotreload.exe

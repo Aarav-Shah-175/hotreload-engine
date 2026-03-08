@@ -14,7 +14,7 @@ Core behavior implemented in this repository:
 
 - recursive directory watching
 - startup build trigger (no initial file save required)
-- debounced change handling
+- batched and debounced change handling
 - cancellation of stale rebuild cycles
 - process-tree termination across platforms
 - structured lifecycle logging with `log/slog`
@@ -102,7 +102,7 @@ It is implemented with platform-specific behavior using Go build tags.
 
 ## How Debouncing Works
 
-Editors often produce multiple file events per save. The engine uses a debouncer window (`--debounce`, default `300ms`) to coalesce event bursts:
+Editors often produce multiple file events per save. The engine uses an event batcher with a debounce window (`--debounce`, default `300ms`) to coalesce event bursts:
 
 - first event starts/reset timer
 - additional events within window reset timer

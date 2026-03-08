@@ -68,6 +68,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	builder := build.NewRunner(logger)
 	proc := process.NewManager(logger)
 	batcher := NewEventBatcher(ctx, cfg.Debounce)
+	batchCh := batcher.C()
 	crashes := newCrashWindow(5, 10*time.Second, 1*time.Second)
 
 	var activeMu sync.Mutex
@@ -160,14 +161,15 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 			}
 			logger.Warn("watcher error", "error", err)
 
-		case batch, ok := <-batcher.C():
+		case batch, ok := <-batchCh:
 			if !ok {
+				batchCh = nil
 				continue
 			}
 			if batch.Count == 0 {
 				continue
 			}
-			logger.Info(fmt.Sprintf("batched %d file events, triggering reload", batch.Count), "events", batch.Count)
+			logger.Info("batched file events, triggering reload", "events", batch.Count)
 			startCycle("file-events", batch.Count)
 		}
 	}
